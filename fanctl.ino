@@ -9,7 +9,7 @@
 #define TEMPERATURENOMINAL 25
 // how many samples to take and average, more takes longer
 // but is more 'smooth'
-#define NUMSAMPLES 100
+#define NUMSAMPLES 200
 // The beta coefficient of the thermistor (usually 3000-4000)
 #define BCOEFFICIENT 3380
 // the value of the 'other' resistor
@@ -17,7 +17,7 @@
 
 #define PORTCOUNT 2
 
-#define VENT_PIN PIN3
+#define VENT_PIN 9
 
 int samples[NUMSAMPLES][PORTCOUNT];
 
@@ -25,34 +25,47 @@ int const ports[] = { PIN_A0, PIN_A1 };
 
 int pwmValue = 22;
 
+int userValue = -1;
+
+const word PWM_FREQ_HZ = 25000;
+const word TCNT1_TOP = 16000000/(2*PWM_FREQ_HZ);
+
 #define NUMRSAVG 100
 #define NUMRSAVG_PORTS 2
-float ravg[NUMRSAVG_PORTS][NUMRSAVG];
+double ravg[NUMRSAVG_PORTS][NUMRSAVG];
 int rindex[NUMRSAVG_PORTS];
-float ravgsum[NUMRSAVG_PORTS];
+double ravgsum[NUMRSAVG_PORTS];
 int const ravgPorts[] = { 2, 3 };
 
 void takeSamples(int numSamples, int portCount);
 
-void init(float *average, int length);
+void init(double *average, int length);
 
-void calculateAverages(float *average);
+void calculateAverages(double *average);
 
-float getCelcius(float d);
+double getCelcius(double d);
 
 void pwm25kHzBegin() {
-    TCCR2A = 0;                               // TC2 Control Register A
-    TCCR2B = 0;                               // TC2 Control Register B
-    TIMSK2 = 0;                               // TC2 Interrupt Mask Register
-    TIFR2 = 0;                                // TC2 Interrupt Flag Register
-    TCCR2A |= (1 << COM2B1) | (1 << WGM21) | (1 << WGM20);  // OC2B cleared/set on match when up/down counting, fast PWM
-    TCCR2B |= (1 << WGM22) | (1 << CS21);     // prescaler 8
-    OCR2A = 79;                               // TOP overflow value (Hz)
-    OCR2B = 0;
+    // Clear Timer1 control and count registers
+    TCCR1A = 0;
+    TCCR1B = 0;
+    TCNT1  = 0;
+
+    // Set Timer1 configuration
+    // COM1A(1:0) = 0b10   (Output A clear rising/set falling)
+    // COM1B(1:0) = 0b00   (Output B normal operation)
+    // WGM(13:10) = 0b1010 (Phase correct PWM)
+    // ICNC1      = 0b0    (Input capture noise canceler disabled)
+    // ICES1      = 0b0    (Input capture edge select disabled)
+    // CS(12:10)  = 0b001  (Input clock select = clock/1)
+    
+    TCCR1A |= (1 << COM1A1) | (1 << WGM11);
+    TCCR1B |= (1 << WGM13) | (1 << CS10);
+    ICR1 = TCNT1_TOP;
 }
 
-void pwmDuty(byte ocrb) {
-    OCR2B = ocrb;                             // PWM Width (duty)
+void pwmDuty(byte duty) {
+    OCR1A = (word) (duty*TCNT1_TOP)/100;
 }
 
 
@@ -69,7 +82,13 @@ void setup(void) {
 }
 
 void loop(void) {
-    float average[PORTCOUNT];
+
+    // send data only when you receive data:
+    if (Serial.available() > 0) {
+      userValue = Serial.parseInt();
+    }
+
+    double average[PORTCOUNT];
 
     init(average, PORTCOUNT);
 
@@ -95,20 +114,27 @@ void loop(void) {
     }
 
 
-    pwmValue = (int)(4.625 * average[0] - 200);
-    pwmValue = constrain(pwmValue, 8, 79);
+    pwmValue = (int)(13 * average[0] - 380);
+    pwmValue = constrain(pwmValue, 11, 100);
 
+    if (pwmValue >= 100) {
+      userValue = 100;
+    }
 
-    pwmDuty(pwmValue);
+    pwmDuty(userValue >= 0 ? userValue : pwmValue);
 
     Serial.print(pwmValue);
+
+    Serial.print(" ");
+
+    Serial.print(userValue);
 
     Serial.println(" ");
 
     delay(200);
 }
 
-float getCelcius(float d) {
+double getCelcius(double d) {
     double steinhart;
     steinhart = d / THERMISTORNOMINAL;     // (R/Ro)
     steinhart = log(steinhart);                  // ln(R/Ro)
@@ -116,18 +142,18 @@ float getCelcius(float d) {
     steinhart += 1.0 / (TEMPERATURENOMINAL + 273.15); // + (1/To)
     steinhart = 1.0 / steinhart;                 // Invert
     steinhart -= 273.15;
-    return (float)steinhart;
+    return (double)steinhart;
 }
 
-void calculateAverages(float *average) {
+void calculateAverages(double *average) {
     for (int i = 0; i < NUMSAMPLES; i++) {
         for (int j = 0; j < PORTCOUNT; j++) {
-            average[j] += (float)samples[i][j];
+            average[j] += (double)samples[i][j];
         }
     }
 }
 
-void init(float *average, int length) {
+void init(double *average, int length) {
     for (int i = 0; i < length; i++) {
         average[i] = 0;
     }
@@ -138,7 +164,7 @@ void takeSamples(int numSamples, int portCount) {// take N samples in a row, wit
         for (int j = 0; j < portCount; j++) {
             samples[i][j] = analogRead(ports[j]);
         }
-        delay(10);
+        delay(20);
     }
 }
 
